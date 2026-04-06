@@ -1,5 +1,3 @@
-package com.example.myface
-
 const val LIQUID_GLASS_SHADER = """
     uniform shader background;
     uniform shader textMask;
@@ -8,41 +6,36 @@ const val LIQUID_GLASS_SHADER = """
     half4 main(float2 coord) {
         half4 mask = textMask.eval(coord);
         
-        // Lowered the threshold slightly to catch the very edge of the blur
-        if (mask.a > 0.05) { 
+        // We start the effect as soon as the mask begins (0.05)
+        if (mask.a > 0.05) {
             
-            // --- 1. THE CURVE ---
-            // Using pow() makes the bend accelerate at the edges, 
-            // simulating a true rounded droplet rather than a flat bevel.
-            float warpPower = 45.0; 
-            float edgeFactor = pow(1.0 - mask.a, 1.5); 
-            float edgeBend = edgeFactor * warpPower; 
+            // 1. THE BEND MATH
+            // 'edgeFactor' is strongest at the edges and zero in the middle.
+            float warpPower = 35.0; 
+            float edgeFactor = pow(1.0 - mask.a, 1.5);
+            float baseBend = edgeFactor * warpPower; 
             
-            // --- 2. CHROMATIC ABERRATION (Color Splitting) ---
-            // We shift the Red, Green, and Blue channels slightly differently
-            // to create a rainbow prism effect on the sharpest curves.
-            float2 rOffset = float2(edgeBend * 1.15, edgeBend * 1.15);
-            float2 gOffset = float2(edgeBend * 1.00, edgeBend * 1.00);
-            float2 bOffset = float2(edgeBend * 0.85, edgeBend * 0.85);
+            // 2. THE RAINBOW EFFECT (Chromatic Aberration)
+            // We sample the background 3 times with different offsets for R, G, and B.
+            // Red bends the most, Blue the least.
+            float2 rCoord = coord + float2(baseBend * 1.2, baseBend * 1.2);
+            float2 gCoord = coord + float2(baseBend * 1.0, baseBend * 1.0);
+            float2 bCoord = coord + float2(baseBend * 0.8, baseBend * 0.8);
             
-            half r = background.eval(coord + rOffset).r;
-            half g = background.eval(coord + gOffset).g;
-            half b = background.eval(coord + bOffset).b;
+            half r = background.eval(rCoord).r;
+            half g = background.eval(gCoord).g;
+            half b = background.eval(bCoord).b;
             
             half4 glassColor = half4(r, g, b, 1.0);
             
-            // --- 3. VOLUME & SHADING ---
-            // Adds a subtle dark shadow right inside the edge to give the liquid visual weight/thickness
-            float edgeShadow = smoothstep(0.0, 0.4, mask.a) * smoothstep(1.0, 0.6, mask.a);
-            glassColor.rgb -= half3(edgeShadow * 0.25);
-            
-            // A brighter, sharper highlight to match the curved glass
-            float shine = smoothstep(0.4, 0.9, mask.a) * 0.6; 
+            // 3. GLOSS & SHINE
+            // Add a crisp white highlight on the "top" of the glass
+            float shine = smoothstep(0.5, 0.9, mask.a) * 0.5;
             glassColor.rgb += half3(shine);
             
             return glassColor;
         } else {
-            // Draw normal background outside the text
+            // Outside the font, show the normal background
             return background.eval(coord);
         }
     }

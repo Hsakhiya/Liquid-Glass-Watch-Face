@@ -50,5 +50,4 @@ dependencies {
 
     // UI Library to satisfy the default generated themes
     implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.wear.watchface:watchface-complications-rendering:1.2.1")
 }
