@@ -3,8 +3,13 @@ package com.example.myface
 import android.content.Context
 import android.graphics.*
 import android.view.SurfaceHolder
+import androidx.core.graphics.drawable.toBitmap
 import androidx.wear.watchface.*
+import androidx.wear.watchface.complications.data.PhotoImageComplicationData
 import androidx.wear.watchface.style.CurrentUserStyleRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
@@ -13,6 +18,7 @@ class LiquidRenderer(
     surfaceHolder: SurfaceHolder,
     watchState: WatchState,
     private val currentUserStyleRepository: CurrentUserStyleRepository,
+    private val complicationSlotsManager: ComplicationSlotsManager, // <--- ADDED MANAGER HERE
     canvasType: Int
 ) : Renderer.CanvasRenderer2<Renderer.SharedAssets>(
     surfaceHolder,
@@ -20,7 +26,7 @@ class LiquidRenderer(
     watchState,
     canvasType,
     16L, // Frame delay (approx 60fps)
-    clearWithBackgroundTintBeforeRenderingHighlightLayer = true // <--- ADD THIS LINE
+    clearWithBackgroundTintBeforeRenderingHighlightLayer = true
 ) {
 
     // --- Shader & Paint Setup ---
@@ -38,17 +44,40 @@ class LiquidRenderer(
     private lateinit var backgroundBitmap: Bitmap
     private lateinit var textMaskBitmap: Bitmap
     private lateinit var textCanvas: Canvas
-    private val hourFormatter = DateTimeFormatter.ofPattern("hh") // Use "hh" if you prefer 12-hour time
+    private val hourFormatter = DateTimeFormatter.ofPattern("hh") // 12-hour time
     private val minuteFormatter = DateTimeFormatter.ofPattern("mm")
 
     override suspend fun init() {
-        // Load your background image from res/drawable
+        // Load your fallback background image
         val rawBackground = BitmapFactory.decodeResource(context.resources, R.drawable.mandir)
-        // We will scale it in onRenderParametersChanged
         backgroundBitmap = rawBackground
 
+        // Load your custom font
         val customTypeface = context.resources.getFont(R.font.schlbkb)
         textPaint.typeface = customTypeface
+
+        // --- NEW: THE BACKGROUND PHOTO LISTENER ---
+        // This listens for when the user picks a photo via the watch customization menu
+        CoroutineScope(Dispatchers.Main).launch {
+            complicationSlotsManager.complicationSlots[100]?.complicationData?.collect { data ->
+                if (data is PhotoImageComplicationData) {
+                    val drawable = data.photoImage.loadDrawable(context)
+                    if (drawable != null) {
+                        val newPhoto = drawable.toBitmap()
+
+                        // If the screen bounds are ready, scale and apply it immediately
+                        if (this@LiquidRenderer::textMaskBitmap.isInitialized) {
+                            backgroundBitmap = Bitmap.createScaledBitmap(newPhoto, textMaskBitmap.width, textMaskBitmap.height, true)
+                            glassShader.setInputShader("background", BitmapShader(backgroundBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+                            invalidate() // Force the watch to instantly redraw with the new photo!
+                        } else {
+                            // Otherwise, save it for the first render loop
+                            backgroundBitmap = newPhoto
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun render(canvas: Canvas, bounds: Rect, zonedDateTime: ZonedDateTime, sharedAssets: SharedAssets) {
@@ -71,8 +100,6 @@ class LiquidRenderer(
         }
 
         // 2. Active Mode (Liquid Effect)
-
-        // Ensure our offscreen bitmap is initialized to the screen size
         if (!this::textMaskBitmap.isInitialized || textMaskBitmap.width != bounds.width()) {
             textMaskBitmap = Bitmap.createBitmap(bounds.width(), bounds.height(), Bitmap.Config.ARGB_8888)
             textCanvas = Canvas(textMaskBitmap)
@@ -84,11 +111,9 @@ class LiquidRenderer(
         }
 
         // Clear the offscreen text canvas
-        // Clear the offscreen text canvas
         textMaskBitmap.eraseColor(Color.TRANSPARENT)
 
-        // --- NEW: Apply a blur to create a massive liquid footprint ---
-        // The first number (25f) controls how WIDE the distortion area is.
+        // Apply a blur to create the liquid footprint
         textPaint.maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
 
         // Draw the hours and minutes onto the offscreen mask
@@ -98,29 +123,24 @@ class LiquidRenderer(
         textCanvas.drawText(hourText, width / 2, height / 2 - 10f, textPaint)
         textCanvas.drawText(minuteText, width / 2, height / 2 + 160f, textPaint)
 
-        // --- NEW: Remove the blur so Ambient mode stays sharp! ---
+        // Remove the blur so Ambient mode stays sharp!
         textPaint.maskFilter = null
 
         // Bind the updated text mask to the shader
         glassShader.setInputShader("textMask", BitmapShader(textMaskBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
 
         // 3. Draw the magic!
-        // Drawing a rectangle over the whole screen using the shaderPaint
-        // triggers the AGSL code for every pixel.
         canvas.drawRect(0f, 0f, width, height, shaderPaint)
     }
 
-    // --- REQUIRED FUNCTION ADDED HERE ---
     override fun renderHighlightLayer(
         canvas: Canvas,
         bounds: Rect,
         zonedDateTime: ZonedDateTime,
         sharedAssets: SharedAssets
     ) {
-        // This is intentionally left blank.
-        // It prevents the "does not implement abstract base class member" error.
+        // Intentionally left blank to prevent abstract base class error.
     }
-    // ------------------------------------
 
     override suspend fun createSharedAssets(): SharedAssets {
         return object : SharedAssets {

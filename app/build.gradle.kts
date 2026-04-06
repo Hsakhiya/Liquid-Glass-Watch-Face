@@ -5,8 +5,8 @@ plugins {
 
 android {
     namespace = "com.example.myface"
+    compileSdk = 36
     // FIX 1: compileSdk expects a simple integer, not a nested block
-    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.myface"
@@ -48,5 +48,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("androidx.core:core-ktx:1.13.1")
 
+    // UI Library to satisfy the default generated themes
     implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.wear.watchface:watchface-complications-rendering:1.2.1")
 }
