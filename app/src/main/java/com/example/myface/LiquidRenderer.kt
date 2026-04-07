@@ -29,7 +29,7 @@ class LiquidRenderer(
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 180f
+        textSize = 200f
        // Back to standard font
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
