@@ -6,6 +6,14 @@ import android.graphics.*
 import android.view.SurfaceHolder
 import androidx.wear.watchface.*
 import androidx.wear.watchface.style.CurrentUserStyleRepository
+import com.google.android.gms.wearable.DataClient
+import com.google.android.gms.wearable.DataEvent
+import com.google.android.gms.wearable.Wearable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
+import java.io.ObjectInputStream
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
@@ -30,7 +38,14 @@ class LiquidRenderer(
     private val textPaint = Paint().apply {
         color = Color.WHITE
         textSize = 200f
-       // Back to standard font
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+
+    private var debugMessage = "Waiting for phone..."
+    private val debugPaint = Paint().apply {
+        color = Color.YELLOW
+        textSize = 24f
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
     }
@@ -38,40 +53,112 @@ class LiquidRenderer(
     private lateinit var backgroundBitmap: Bitmap
     private lateinit var textMaskBitmap: Bitmap
     private lateinit var textCanvas: Canvas
-    private val hourFormatter = DateTimeFormatter.ofPattern("hh") // 12-hour time
+    private val hourFormatter = DateTimeFormatter.ofPattern("hh")
     private val minuteFormatter = DateTimeFormatter.ofPattern("mm")
+
+    private var currentBlurRadius: Float = 5f
+
+    // --- HELPER FUNCTION: Unpacks the Flutter watch_connectivity data ---
+    private fun processFlutterData(rawData: ByteArray?) {
+        if (rawData == null) return
+
+        try {
+            // Read the raw bytes back into a standard Java Map
+            val inputStream = ObjectInputStream(ByteArrayInputStream(rawData))
+            val map = inputStream.readObject() as? Map<String, Any>
+
+            if (map != null) {
+                val receivedKeys = map.keys.joinToString(", ")
+                debugMessage = "Keys: $receivedKeys"
+                CoroutineScope(Dispatchers.Main).launch { invalidate() }
+
+                // 1. Process Background Image
+                val imageBytes = map["background_bytes"] as? ByteArray
+                if (imageBytes != null) {
+                    debugMessage = "Got Image! Size: ${imageBytes.size}"
+                    val newBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        backgroundBitmap = newBitmap
+                        if (this@LiquidRenderer::textMaskBitmap.isInitialized) {
+                            backgroundBitmap = Bitmap.createScaledBitmap(
+                                backgroundBitmap,
+                                textMaskBitmap.width,
+                                textMaskBitmap.height,
+                                true
+                            )
+                            glassShader.setInputShader(
+                                "background",
+                                BitmapShader(backgroundBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                            )
+                        }
+                        invalidate()
+                    }
+                }
+
+                // 2. Process Blur Slider
+                val blurRadius = map["blur_radius"] as? Double
+                if (blurRadius != null) {
+                    currentBlurRadius = blurRadius.toFloat()
+                    debugMessage = "Got Blur: $currentBlurRadius"
+                    CoroutineScope(Dispatchers.Main).launch { invalidate() }
+                }
+            }
+        } catch (e: Exception) {
+            debugMessage = "Failed to parse map!"
+            CoroutineScope(Dispatchers.Main).launch { invalidate() }
+        }
+    }
+    // ------------------------------------------------------------------
+
+    private val dataListener = DataClient.OnDataChangedListener { dataEvents ->
+        for (event in dataEvents) {
+            if (event.type == DataEvent.TYPE_CHANGED) {
+                // Call our new helper function instead of using DataMapItem!
+                processFlutterData(event.dataItem.data)
+            }
+        }
+    }
 
     override suspend fun init() {
         val rawBackground = BitmapFactory.decodeResource(context.resources, R.drawable.mandir)
         backgroundBitmap = rawBackground
 
-        // Load your custom font and apply it to the text paint
         val customTypeface = context.resources.getFont(R.font.schlbkb)
         textPaint.typeface = customTypeface
+
+        // 1. Attach live listener
+        Wearable.getDataClient(context.applicationContext).addListener(dataListener)
+
+        // 2. Mailbox check on boot
+        Wearable.getDataClient(context.applicationContext).dataItems.addOnSuccessListener { dataItems ->
+            debugMessage = "Mailbox has ${dataItems.count} items"
+            CoroutineScope(Dispatchers.Main).launch { invalidate() }
+
+            for (item in dataItems) {
+                // Call our new helper function here too!
+                processFlutterData(item.data)
+            }
+        }.addOnFailureListener {
+            debugMessage = "Mailbox check failed."
+            CoroutineScope(Dispatchers.Main).launch { invalidate() }
+        }
     }
 
     override fun render(canvas: Canvas, bounds: Rect, zonedDateTime: ZonedDateTime, sharedAssets: SharedAssets) {
         val width = bounds.width().toFloat()
         val height = bounds.height().toFloat()
 
-        // 1. Handle Ambient Mode (Battery Saver - NO SHADERS!)
         if (renderParameters.drawMode == DrawMode.AMBIENT) {
             canvas.drawColor(Color.BLACK)
-
             val hourText = zonedDateTime.format(hourFormatter)
             val minuteText = zonedDateTime.format(minuteFormatter)
-
             textPaint.style = Paint.Style.STROKE
-            // Draw hours slightly above the middle
             canvas.drawText(hourText, width / 2, height / 2 - 10f, textPaint)
-            // Draw minutes below the middle
             canvas.drawText(minuteText, width / 2, height / 2 + 160f, textPaint)
-
             textPaint.style = Paint.Style.FILL
             return
         }
-
-
 
         if (!this::textMaskBitmap.isInitialized || textMaskBitmap.width != bounds.width()) {
             textMaskBitmap = Bitmap.createBitmap(bounds.width(), bounds.height(), Bitmap.Config.ARGB_8888)
@@ -81,32 +168,29 @@ class LiquidRenderer(
             glassShader.setInputShader("background", BitmapShader(backgroundBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
         }
 
-        // Clear the offscreen text canvas
         textMaskBitmap.eraseColor(Color.TRANSPARENT)
 
-        // --- NEW: Apply a blur to create a massive liquid footprint ---
-        // The first number (25f) controls how WIDE the distortion area is.
-        textPaint.maskFilter = BlurMaskFilter(5f, BlurMaskFilter.Blur.NORMAL)
+        if (currentBlurRadius > 0f) {
+            textPaint.maskFilter = BlurMaskFilter(currentBlurRadius, BlurMaskFilter.Blur.NORMAL)
+        } else {
+            textPaint.maskFilter = null
+        }
 
-        // Draw the hours and minutes onto the offscreen mask
         val hourText = zonedDateTime.format(hourFormatter)
         val minuteText = zonedDateTime.format(minuteFormatter)
 
         textCanvas.drawText(hourText, width / 2, height / 2 - 10f, textPaint)
         textCanvas.drawText(minuteText, width / 2, height / 2 + 160f, textPaint)
-
-        // --- NEW: Remove the blur so Ambient mode stays sharp! ---
         textPaint.maskFilter = null
 
-        // Bind the updated text mask to the shader
         glassShader.setInputShader("textMask", BitmapShader(textMaskBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
 
         canvas.drawRect(0f, 0f, width, height, shaderPaint)
+
+        // VISUAL DEBUGGER
+        canvas.drawText(debugMessage, width / 2f, 60f, debugPaint)
     }
 
     override fun renderHighlightLayer(canvas: Canvas, bounds: Rect, zonedDateTime: ZonedDateTime, sharedAssets: SharedAssets) {}
-
-    override suspend fun createSharedAssets(): SharedAssets {
-        return object : SharedAssets { override fun onDestroy() {} }
-    }
+    override suspend fun createSharedAssets(): SharedAssets { return object : SharedAssets { override fun onDestroy() {} } }
 }

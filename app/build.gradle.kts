@@ -50,4 +50,5 @@ dependencies {
 
     // UI Library to satisfy the default generated themes
     implementation("com.google.android.material:material:1.11.0")
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
 }
